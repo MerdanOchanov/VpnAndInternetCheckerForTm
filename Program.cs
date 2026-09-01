@@ -231,6 +231,83 @@ namespace InternetChecker
             catch { return false; }
         }
 
+        // Chrome-style circumvention of DNS-poisoning blocks: resolve the host via DoH
+        // (encrypted DNS the ISP can't poison), then TLS-connect to the REAL IP. Returns
+        // true if the TLS handshake for that host succeeds — i.e. the site really answers.
+        public static bool ReachableViaDoh(string host, int timeoutMs)
+        {
+            IPAddress ip = DohResolve(host, timeoutMs);
+            if (ip == null) return false;
+            return TlsHandshake(ip, host, timeoutMs);
+        }
+
+        static IPAddress DohResolve(string host, int t)
+        {
+            IPAddress ip = DohQuery("https://1.1.1.1/dns-query?type=A&name=" + host, t);
+            if (ip == null) ip = DohQuery("https://8.8.8.8/resolve?type=A&name=" + host, t);
+            return ip;
+        }
+
+        static IPAddress DohQuery(string url, int t)
+        {
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "GET";
+                req.Accept = "application/dns-json";
+                req.Timeout = t; req.ReadWriteTimeout = t;
+                req.UserAgent = "InternetChecker";
+                try { req.Proxy = WebRequest.GetSystemWebProxy(); } catch { }
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+                using (System.IO.StreamReader sr = new System.IO.StreamReader(resp.GetResponseStream()))
+                {
+                    string json = sr.ReadToEnd();
+                    int idx = 0;
+                    while (true)
+                    {
+                        int d = json.IndexOf("\"data\":\"", idx);
+                        if (d < 0) break;
+                        d += 8;
+                        int e = json.IndexOf('"', d);
+                        if (e < 0) break;
+                        string val = json.Substring(d, e - d);
+                        IPAddress a;
+                        if (IPAddress.TryParse(val, out a) && a.AddressFamily == AddressFamily.InterNetwork
+                            && !Nets.IsBlocked(a)) return a;
+                        idx = e + 1;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        static bool TlsHandshake(IPAddress ip, string host, int t)
+        {
+            System.Net.Sockets.TcpClient tc = new System.Net.Sockets.TcpClient();
+            try
+            {
+                IAsyncResult ar = tc.BeginConnect(ip, 443, null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(t, false) || !tc.Connected) return false;
+                tc.EndConnect(ar);
+                tc.ReceiveTimeout = t; tc.SendTimeout = t;
+                using (System.Net.Security.SslStream ssl = new System.Net.Security.SslStream(
+                    tc.GetStream(), false,
+                    delegate(object s, System.Security.Cryptography.X509Certificates.X509Certificate c,
+                             System.Security.Cryptography.X509Certificates.X509Chain ch,
+                             System.Net.Security.SslPolicyErrors e) { return true; }))
+                {
+                    ssl.AuthenticateAsClient(host, null,
+                        System.Security.Authentication.SslProtocols.Tls12
+                        | System.Security.Authentication.SslProtocols.Tls11
+                        | System.Security.Authentication.SslProtocols.Tls, false); // host = SNI
+                    return ssl.IsAuthenticated;
+                }
+            }
+            catch { return false; }
+            finally { try { tc.Close(); } catch { } }
+        }
+
         // Minimal DNS/A resolver over UDP, pinned to a specific interface.
         public static IPAddress DnsQuery(IPAddress localIp, int ifIndex, IPAddress server, string host, int timeoutMs)
         {
@@ -967,8 +1044,12 @@ namespace InternetChecker
                 }
                 else
                 {
-                    // adapter or upstream/router VPN: a real HTTPS request over the default route
-                    bool ok = Probe.HttpsWorks(host, c.TimeoutMs);
+                    // Adapter / upstream VPN / Kerio-style gateway. Try like the browser:
+                    //  1) a real HTTPS request via system settings (proxy/PAC/direct);
+                    //  2) if that fails, resolve the real IP over DoH (bypassing poisoned local
+                    //     DNS) and TLS-connect to it — the gateway then routes it through the
+                    //     shared VPN, exactly as Chrome's Secure DNS does.
+                    bool ok = Probe.HttpsWorks(host, c.TimeoutMs) || Probe.ReachableViaDoh(host, c.TimeoutMs);
                     if (ok) { mark = "OK"; vOk++; vResolvedAny = true; }
                     else
                     {
