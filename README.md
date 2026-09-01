@@ -14,6 +14,8 @@ _Сделано под реалии Туркменистана: провайде
 
 ### [⬇️ Скачать последнюю версию](https://github.com/MerdanOchanov/VpnAndInternetCheckerForTm/releases/latest)
 
+📄 [Краткая инструкция пользователя (.docx)](docs/Инструкция.docx)
+
 <img src="docs/widget.svg" width="520" alt="Виджет InternetChecker">
 
 </div>
