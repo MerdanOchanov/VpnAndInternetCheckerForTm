@@ -178,6 +178,29 @@ namespace InternetChecker
             finally { try { s.Close(); } catch { } }
         }
 
+        // Plain TCP connect over the default route (no interface binding, system DNS).
+        public static bool TcpDirect(string host, int port, int timeoutMs)
+        {
+            Socket s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            try
+            {
+                s.ReceiveTimeout = timeoutMs; s.SendTimeout = timeoutMs;
+                IAsyncResult ar = s.BeginConnect(host, port, null, null);
+                bool ok = ar.AsyncWaitHandle.WaitOne(timeoutMs, false) && s.Connected;
+                if (ok) s.EndConnect(ar);
+                return ok;
+            }
+            catch { return false; }
+            finally { try { s.Close(); } catch { } }
+        }
+
+        // Is host reachable directly (443, then 80)? Used to detect that the internet
+        // already arrives through an upstream/router VPN even without a local adapter/proxy.
+        public static bool ReachableDirect(string host, int timeoutMs)
+        {
+            return TcpDirect(host, 443, timeoutMs) || TcpDirect(host, 80, timeoutMs);
+        }
+
         // Minimal DNS/A resolver over UDP, pinned to a specific interface.
         public static IPAddress DnsQuery(IPAddress localIp, int ifIndex, IPAddress server, string host, int timeoutMs)
         {
@@ -864,6 +887,13 @@ namespace InternetChecker
                 {
                     v = Res.Ok;
                     vt = vhost + ": OK  [локальный прокси " + local.Type + " " + local.Host + ":" + local.Port + "]";
+                }
+                else if (Probe.ReachableDirect(vhost, c.TimeoutMs))
+                {
+                    // No local adapter/proxy, yet the target is reachable directly -> the
+                    // internet already arrives through an upstream/router VPN.
+                    v = Res.Ok;
+                    vt = vhost + ": OK  [прямой доступ — интернет уже идёт через VPN]";
                 }
                 else if (px != null && px.Pac != null && px.Pac.Length > 0)
                 {
