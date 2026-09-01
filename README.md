@@ -5,11 +5,14 @@
 **Крошечная утилита для трея, которая одним взглядом показывает: жив ли интернет от провайдера — и работает ли ваш VPN.**
 _Сделано под реалии Туркменистана: провайдер проверяется в обход VPN, VPN — до YouTube._
 
+![Latest release](https://img.shields.io/github/v/release/MerdanOchanov/VpnAndInternetCheckerForTm?label=релиз&color=success)
+![Downloads](https://img.shields.io/github/downloads/MerdanOchanov/VpnAndInternetCheckerForTm/total?label=загрузки)
 ![Windows](https://img.shields.io/badge/Windows-7%20%7C%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)
 ![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.x-512BD4?logo=dotnet&logoColor=white)
-![Size](https://img.shields.io/badge/exe-~28%20KB-success)
 ![No admin needed](https://img.shields.io/badge/admin-опционально-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-blue)
+
+### [⬇️ Скачать последнюю версию](https://github.com/MerdanOchanov/VpnAndInternetCheckerForTm/releases/latest)
 
 <img src="docs/widget.svg" width="520" alt="Виджет InternetChecker">
 
@@ -65,12 +68,15 @@ flowchart TD
 
 ## Установка
 
-**Вариант 1 — установщик (рекомендуется).** Скачайте [`dist/InternetChecker.msi`](dist/InternetChecker.msi) и запустите.
+Все сборки — на странице **[Releases](https://github.com/MerdanOchanov/VpnAndInternetCheckerForTm/releases/latest)**.
+
+**Вариант 1 — установщик (рекомендуется).** Скачайте **InternetChecker.msi** и запустите.
 Установщик **сам закрывает старую запущенную версию** и переустанавливает поверх, ставит ярлык
 в меню «Пуск». Совместим с Windows 7 SP1 / 10 / 11.
 
-**Вариант 2 — портативная версия.** Скачайте [`dist/InternetChecker-portable.zip`](dist/InternetChecker-portable.zip),
-распакуйте, запустите `InternetChecker.exe` (рядом должен лежать `internetchecker.cfg`).
+**Вариант 2 — портативная версия.** Скачайте **InternetChecker-portable.zip**, распакуйте, запустите
+`InternetChecker.exe` (рядом должен лежать `internetchecker.cfg`). Либо возьмите только
+**InternetChecker.exe** отдельным файлом — конфиг создастся сам при первом изменении настроек.
 
 > Нужен **.NET Framework 4.x** — на Windows 10/11 уже встроен; на Windows 7 поставьте .NET Framework 4.8.
 
