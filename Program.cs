@@ -51,7 +51,7 @@ namespace InternetChecker
         public int TimeoutMs = 3000;
         public string VpnHints = "TAP,WireGuard,Wintun,OpenVPN,VPN,NordLynx,Mullvad,ProtonVPN,tun,utun,ppp,Clash,sing-box,singbox,v2ray,xray,outline,warp,hysteria,tun2socks,hiddify,nekoray";
         // Local proxy ports probed when a proxy-VPN (v2ray/xray/clash) runs without a system proxy.
-        public string ProxyProbePorts = "10808,10809,1080,1081,7890,7891,2080,8889,1087";
+        public string ProxyProbePorts = "10808,10809,1080,1081,7890,7891,7897,2080,8889,1087,8080,8888,3128,9150,8118,2801,20171,10810";
         public bool Autostart = false;
 
         public static string PathCfg()
@@ -202,11 +202,13 @@ namespace InternetChecker
             finally { try { s.Close(); } catch { } }
         }
 
-        // Real HTTPS reachability over the default route (system DNS). Returns true if the
-        // TLS+HTTP layer actually responds — even any HTTP status counts as reachable.
-        // This is the reliable test: it works whether the host resolves to a real IP OR to
-        // 127.0.0.1 with a local redirector/proxy tunneling it (a common TM setup), and
-        // returns false when a "blocked" name just has nothing answering.
+        // Real HTTPS reachability, resolved and routed exactly like the browser does:
+        // it honours the SYSTEM proxy settings (including a PAC/auto-config script and
+        // WPAD), and falls back to the direct route when no proxy is configured. Returns
+        // true if the TLS+HTTP layer actually responds (any HTTP status counts). This is
+        // the reliable test: it works whether the site resolves to a real IP, goes through
+        // a system proxy/PAC, or resolves to 127.0.0.1 with a local redirector tunneling it
+        // — and returns false only when nothing actually answers.
         public static bool HttpsWorks(string host, int timeoutMs)
         {
             try
@@ -217,7 +219,7 @@ namespace InternetChecker
                 req.ReadWriteTimeout = timeoutMs;
                 req.AllowAutoRedirect = false;
                 req.KeepAlive = false;
-                req.Proxy = null; // force direct route (proxy modes are tested separately)
+                try { req.Proxy = WebRequest.GetSystemWebProxy(); } catch { } // same path as the browser (PAC/WPAD/HTTP proxy)
                 req.UserAgent = "Mozilla/5.0 InternetChecker";
                 using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse()) { return true; }
             }
@@ -979,19 +981,15 @@ namespace InternetChecker
                 vb.Append(host).Append(": ").Append(mark);
             }
 
+            bool hasPac = px != null && px.Pac != null && px.Pac.Length > 0;
             string tag;
             if (proxyMode)
                 tag = (active == px ? "прокси " : "локальный прокси ") + active.Type + " " + active.Host + ":" + active.Port;
             else if (vpn != null) tag = vpn.Name;
-            else tag = "прямой доступ";
+            else tag = hasPac ? "система (PAC)" : "прямой доступ";
 
             if (vOk > 0) v = Res.Ok;
-            else if (!proxyMode && vpn == null && !vResolvedAny)
-            {
-                if (px != null && px.Pac != null && px.Pac.Length > 0)
-                { v = Res.Unknown; tag = "PAC-прокси не поддерживается"; }
-                else { v = Res.Off; tag = "нет VPN"; }
-            }
+            else if (!proxyMode && vpn == null && !hasPac && !vResolvedAny) { v = Res.Off; tag = "нет VPN"; }
             else v = Res.Fail;
 
             vt = vOk + "/" + vTotal + "  " + vb.ToString() + "  [" + tag + "]";
