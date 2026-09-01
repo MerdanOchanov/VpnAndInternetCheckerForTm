@@ -11,15 +11,22 @@ $root = Split-Path -Parent $PSScriptRoot
 $obj  = Join-Path $PSScriptRoot "obj"
 New-Item -ItemType Directory -Force $obj | Out-Null
 
-# --- 1) compile ---
+# --- 0) icon ---
+$icon = Join-Path $root "icon.ico"
+if (-not (Test-Path $icon)) {
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "make-icon.ps1") | Out-Null
+}
+
+# --- 1) compile (embed the icon as the application icon) ---
 $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if (-not (Test-Path $csc)) { $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" }
 & $csc /nologo /target:winexe /platform:x86 /optimize+ `
+    /win32icon:"$icon" `
     /out:"$root\InternetChecker.exe" `
     /reference:System.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Core.dll `
     "$root\Program.cs"
 if ($LASTEXITCODE -ne 0) { throw "compile failed" }
-Write-Host "compiled InternetChecker.exe"
+Write-Host "compiled InternetChecker.exe (with icon)"
 
 # --- 2) portable zip ---
 $pkg = Join-Path $obj "portable"
@@ -55,7 +62,7 @@ Write-Host "built cab"
 
 # --- 4) msi ---
 $msi = Join-Path $root "InternetChecker.msi"
-cscript //nologo "$PSScriptRoot\build-msi.vbs" $msi $cab $root $Version
+cscript //nologo "$PSScriptRoot\build-msi.vbs" $msi $cab $root $Version $icon
 if ($LASTEXITCODE -ne 0) { throw "msi build failed" }
 Write-Host "built $msi"
 Get-ChildItem "$root\InternetChecker.exe","$root\InternetChecker.msi","$zip" | Select-Object Name,Length

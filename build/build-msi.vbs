@@ -9,9 +9,10 @@ Option Explicit
 Const msiOpenDatabaseModeCreate = 3
 Const msiViewModifyInsert = 1
 
-Dim args, msiPath, cabPath, srcDir, ver
+Dim args, msiPath, cabPath, srcDir, ver, iconPath
 Set args = WScript.Arguments
 msiPath = args(0) : cabPath = args(1) : srcDir = args(2) : ver = args(3)
+If args.Count > 4 Then iconPath = args(4) Else iconPath = ""
 
 Dim fso : Set fso = CreateObject("Scripting.FileSystemObject")
 If fso.FileExists(msiPath) Then fso.DeleteFile msiPath
@@ -46,6 +47,7 @@ Q db, "CREATE TABLE `InstallUISequence` (`Action` CHAR(72) NOT NULL, `Condition`
 Q db, "CREATE TABLE `CustomAction` (`Action` CHAR(72) NOT NULL, `Type` SHORT NOT NULL, `Source` CHAR(72), `Target` CHAR(255) PRIMARY KEY `Action`)"
 Q db, "CREATE TABLE `Upgrade` (`UpgradeCode` CHAR(38) NOT NULL, `VersionMin` CHAR(20), `VersionMax` CHAR(20), `Language` CHAR(255), `Attributes` LONG NOT NULL, `Remove` CHAR(255), `ActionProperty` CHAR(72) NOT NULL PRIMARY KEY `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`)"
 Q db, "CREATE TABLE `Shortcut` (`Shortcut` CHAR(72) NOT NULL, `Directory_` CHAR(72) NOT NULL, `Name` CHAR(128) NOT NULL LOCALIZABLE, `Component_` CHAR(72) NOT NULL, `Target` CHAR(72) NOT NULL, `Arguments` CHAR(255), `Description` CHAR(255) LOCALIZABLE, `Hotkey` SHORT, `Icon_` CHAR(72), `IconIndex` SHORT, `ShowCmd` SHORT, `WkDir` CHAR(72) PRIMARY KEY `Shortcut`)"
+Q db, "CREATE TABLE `Icon` (`Name` CHAR(72) NOT NULL, `Data` OBJECT NOT NULL PRIMARY KEY `Name`)"
 
 ' ---- Property ----
 Ins db, "Property", Array("ProductName", "InternetChecker")
@@ -57,12 +59,14 @@ Ins db, "Property", Array("UpgradeCode", upgradeCode)
 Ins db, "Property", Array("ALLUSERS", "1")
 Ins db, "Property", Array("MSIRESTARTMANAGERCONTROL", "Disable")
 Ins db, "Property", Array("ARPNOMODIFY", "1")
+If Len(iconPath) > 0 Then Ins db, "Property", Array("ARPPRODUCTICON", "icc.ico")
 
 ' ---- Directory ----
 Ins db, "Directory", Array("TARGETDIR", "", "SourceDir")
 Ins db, "Directory", Array("ProgramFilesFolder", "TARGETDIR", ".")
 Ins db, "Directory", Array("INSTALLDIR", "ProgramFilesFolder", "IntChk|InternetChecker")
 Ins db, "Directory", Array("ProgramMenuFolder", "TARGETDIR", ".")
+Ins db, "Directory", Array("DesktopFolder", "TARGETDIR", ".")
 Ins db, "Directory", Array("SystemFolder", "TARGETDIR", ".")
 
 ' ---- Feature / Component ----
@@ -77,8 +81,9 @@ Ins db, "File", Array("iccrdme", "MainComp", "README.md", rdmeSize, "", "", 512,
 
 Ins db, "Media", Array(1, 3, "", "#app.cab", "", "")
 
-' ---- Shortcut (Start Menu) ----
+' ---- Shortcuts (Start Menu + Desktop) ----
 Ins db, "Shortcut", Array("IccSc", "ProgramMenuFolder", "IntChk|InternetChecker", "MainComp", "[#iccexe]", "", "Internet and VPN checker", Null, Null, Null, 1, "INSTALLDIR")
+Ins db, "Shortcut", Array("IccDesk", "DesktopFolder", "IntChk|InternetChecker", "MainComp", "[#iccexe]", "", "Internet and VPN checker", Null, Null, Null, 1, "INSTALLDIR")
 
 ' ---- Major upgrade: remove any version <= current, then install ----
 Ins db, "Upgrade", Array(upgradeCode, "", ver, "", 256, "", "OLDVERSIONS")
@@ -121,6 +126,17 @@ rec.StringData(1) = "app.cab"
 rec.SetStream 2, cabPath
 v.Modify msiViewModifyInsert, rec
 v.Close
+
+' ---- embed the icon into the Icon table (for Add/Remove Programs) ----
+If Len(iconPath) > 0 And fso.FileExists(iconPath) Then
+    Dim iv : Set iv = db.OpenView("SELECT `Name`,`Data` FROM `Icon`")
+    iv.Execute Nothing
+    Dim irec : Set irec = installer.CreateRecord(2)
+    irec.StringData(1) = "icc.ico"
+    irec.SetStream 2, iconPath
+    iv.Modify msiViewModifyInsert, irec
+    iv.Close
+End If
 
 ' ---- summary information ----
 Dim si : Set si = db.SummaryInformation(20)

@@ -15,6 +15,7 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
@@ -723,6 +724,7 @@ namespace InternetChecker
             autostartItem = new MenuItem("Автозапуск с Windows", ToggleAutostart);
             autostartItem.Checked = cfg.Autostart;
             menu.MenuItems.Add(autostartItem);
+            menu.MenuItems.Add("Ярлык на рабочий стол", delegate(object s, EventArgs e) { CreateDesktopShortcut(); });
             if (!Sys.IsElevated())
                 menu.MenuItems.Add("Перезапустить от администратора (точный пинг)",
                     delegate(object s, EventArgs e) { Sys.Relaunch(true); ExitApp(); });
@@ -986,6 +988,44 @@ namespace InternetChecker
                 if (on) k.SetValue("InternetChecker", "\"" + Application.ExecutablePath + "\"");
                 else if (k.GetValue("InternetChecker") != null) k.DeleteValue("InternetChecker", false);
                 k.Close();
+            }
+            catch { }
+        }
+
+        void CreateDesktopShortcut()
+        {
+            try
+            {
+                string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                string lnk = System.IO.Path.Combine(desktop, "InternetChecker.lnk");
+                Type t = Type.GetTypeFromProgID("WScript.Shell");
+                object shell = Activator.CreateInstance(t);
+                object sc = t.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell,
+                    new object[] { lnk });
+                Type st = sc.GetType();
+                st.InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { Application.ExecutablePath });
+                st.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, sc,
+                    new object[] { System.IO.Path.GetDirectoryName(Application.ExecutablePath) });
+                st.InvokeMember("IconLocation", BindingFlags.SetProperty, null, sc,
+                    new object[] { Application.ExecutablePath + ",0" });
+                st.InvokeMember("Description", BindingFlags.SetProperty, null, sc,
+                    new object[] { "Проверка интернета и VPN" });
+                st.InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+                Notify("InternetChecker", "Ярлык создан на рабочем столе");
+            }
+            catch (Exception ex)
+            {
+                Notify("InternetChecker", "Не удалось создать ярлык: " + ex.Message);
+            }
+        }
+
+        void Notify(string title, string text)
+        {
+            try
+            {
+                tray.BalloonTipTitle = title;
+                tray.BalloonTipText = text;
+                tray.ShowBalloonTip(2500);
             }
             catch { }
         }
