@@ -1,0 +1,15 @@
+# build intermediates
+build/obj/
+*.log
+*.inf
+*.rpt
+
+# loose build outputs at repo root (shipped copies live in dist/)
+/InternetChecker.exe
+/InternetChecker.msi
+/InternetChecker-portable.zip
+/InternetChecker-portable/
+
+# scratch
+*.pdb
+Thumbs.db
