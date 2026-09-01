@@ -30,6 +30,12 @@ namespace InternetChecker
         [STAThread]
         static void Main()
         {
+            try
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12
+                    | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
+            }
+            catch { }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayContext());
@@ -39,8 +45,8 @@ namespace InternetChecker
     // ------------------------- Config -------------------------
     class Config
     {
-        public string ProviderTargets = "astu.tm,telecom.tm"; // provider check (bypass VPN)
-        public string VpnTarget = "youtube.com";              // VPN check (through tunnel)
+        public string ProviderTargets = "astu.tm,telecom.tm";                 // provider check (bypass VPN)
+        public string VpnTargets = "youtube.com,instagram.com,tiktok.com";   // VPN check (through tunnel)
         public int IntervalSec = 15;
         public int TimeoutMs = 3000;
         public string VpnHints = "TAP,WireGuard,Wintun,OpenVPN,VPN,NordLynx,Mullvad,ProtonVPN,tun,utun,ppp,Clash,sing-box,singbox,v2ray,xray,outline,warp,hysteria,tun2socks,hiddify,nekoray";
@@ -72,7 +78,8 @@ namespace InternetChecker
                         string k = s.Substring(0, eq).Trim().ToLowerInvariant();
                         string v = s.Substring(eq + 1).Trim();
                         if (k == "providertargets") c.ProviderTargets = v;
-                        else if (k == "vpntarget") c.VpnTarget = v;
+                        else if (k == "vpntargets") c.VpnTargets = v;
+                        else if (k == "vpntarget") c.VpnTargets = v; // backward compat (single host)
                         else if (k == "intervalsec") int.TryParse(v, out c.IntervalSec);
                         else if (k == "timeoutms") int.TryParse(v, out c.TimeoutMs);
                         else if (k == "vpnhints") c.VpnHints = v;
@@ -95,8 +102,8 @@ namespace InternetChecker
                 sb.AppendLine("# InternetChecker config");
                 sb.AppendLine("# providerTargets: узлы туркм. провайдера (через запятую) для проверки МИМО VPN");
                 sb.AppendLine("providerTargets=" + ProviderTargets);
-                sb.AppendLine("# vpnTarget: узел для проверки ЧЕРЕЗ VPN");
-                sb.AppendLine("vpnTarget=" + VpnTarget);
+                sb.AppendLine("# vpnTargets: популярные ресурсы для проверки ЧЕРЕЗ VPN (через запятую)");
+                sb.AppendLine("vpnTargets=" + VpnTargets);
                 sb.AppendLine("intervalSec=" + IntervalSec.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("timeoutMs=" + TimeoutMs.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("vpnHints=" + VpnHints);
@@ -179,14 +186,14 @@ namespace InternetChecker
             finally { try { s.Close(); } catch { } }
         }
 
-        // Plain TCP connect over the default route (no interface binding, system DNS).
-        public static bool TcpDirect(string host, int port, int timeoutMs)
+        // Plain TCP connect to a specific IP over the default route (no interface binding).
+        public static bool TcpDirectIp(IPAddress ip, int port, int timeoutMs)
         {
             Socket s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             try
             {
                 s.ReceiveTimeout = timeoutMs; s.SendTimeout = timeoutMs;
-                IAsyncResult ar = s.BeginConnect(host, port, null, null);
+                IAsyncResult ar = s.BeginConnect(ip, port, null, null);
                 bool ok = ar.AsyncWaitHandle.WaitOne(timeoutMs, false) && s.Connected;
                 if (ok) s.EndConnect(ar);
                 return ok;
@@ -195,11 +202,31 @@ namespace InternetChecker
             finally { try { s.Close(); } catch { } }
         }
 
-        // Is host reachable directly (443, then 80)? Used to detect that the internet
-        // already arrives through an upstream/router VPN even without a local adapter/proxy.
-        public static bool ReachableDirect(string host, int timeoutMs)
+        // Real HTTPS reachability over the default route (system DNS). Returns true if the
+        // TLS+HTTP layer actually responds — even any HTTP status counts as reachable.
+        // This is the reliable test: it works whether the host resolves to a real IP OR to
+        // 127.0.0.1 with a local redirector/proxy tunneling it (a common TM setup), and
+        // returns false when a "blocked" name just has nothing answering.
+        public static bool HttpsWorks(string host, int timeoutMs)
         {
-            return TcpDirect(host, 443, timeoutMs) || TcpDirect(host, 80, timeoutMs);
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create("https://" + host + "/");
+                req.Method = "HEAD";
+                req.Timeout = timeoutMs;
+                req.ReadWriteTimeout = timeoutMs;
+                req.AllowAutoRedirect = false;
+                req.KeepAlive = false;
+                req.Proxy = null; // force direct route (proxy modes are tested separately)
+                req.UserAgent = "Mozilla/5.0 InternetChecker";
+                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse()) { return true; }
+            }
+            catch (WebException we)
+            {
+                // A protocol error (e.g. 403/405) still means TLS+HTTP worked -> reachable.
+                return we.Response != null;
+            }
+            catch { return false; }
         }
 
         // Minimal DNS/A resolver over UDP, pinned to a specific interface.
@@ -336,6 +363,53 @@ namespace InternetChecker
             return true;
         }
 
+        // A resolved address that means "blocked/redirected": loopback or blackhole.
+        // Turkmen DNS/hosts blocking often points youtube.com etc. at 127.0.0.1.
+        public static bool IsBlocked(IPAddress a)
+        {
+            if (a == null) return true;
+            if (a.AddressFamily == AddressFamily.InterNetworkV6) return a.Equals(IPAddress.IPv6Loopback);
+            byte[] b = a.GetAddressBytes();
+            return b[0] == 127 || b[0] == 0;
+        }
+
+        // System-DNS resolve to a real IPv4, skipping poisoned loopback/blackhole answers.
+        // Returns null if the host does not resolve OR resolves only to a blocked address.
+        public static IPAddress ResolveSystem(string host)
+        {
+            if (string.IsNullOrEmpty(host)) return null;
+            IPAddress lit;
+            if (IPAddress.TryParse(host, out lit)) return IsBlocked(lit) ? null : lit;
+            try
+            {
+                foreach (IPAddress a in Dns.GetHostAddresses(host))
+                    if (a.AddressFamily == AddressFamily.InterNetwork && !IsBlocked(a)) return a;
+            }
+            catch { }
+            return null;
+        }
+
+        // True when the host resolves ONLY to loopback/blackhole (blocked/redirected),
+        // as opposed to not resolving at all.
+        public static bool IsPoisoned(string host)
+        {
+            if (string.IsNullOrEmpty(host)) return false;
+            IPAddress lit;
+            if (IPAddress.TryParse(host, out lit)) return IsBlocked(lit);
+            try
+            {
+                bool any = false, allBlocked = true;
+                foreach (IPAddress a in Dns.GetHostAddresses(host))
+                {
+                    if (a.AddressFamily != AddressFamily.InterNetwork) continue;
+                    any = true;
+                    if (!IsBlocked(a)) allBlocked = false;
+                }
+                return any && allBlocked;
+            }
+            catch { return false; }
+        }
+
         // Routable IPv4 only (skips APIPA) - used to tell a live adapter from a dead TAP/VPN.
         public static IPAddress GetRoutableIPv4(NetworkInterface ni)
         {
@@ -444,6 +518,7 @@ namespace InternetChecker
 
         public static bool Reachable(NetworkInterface ni, IPAddress ip, int timeoutMs)
         {
+            if (IsBlocked(ip)) return false; // poisoned to loopback/blackhole = not reachable
             IPAddress local = GetIPv4(ni);
             int idx = Probe.IfIndex(ni);
             if (Probe.Tcp(ni, local, idx, ip, 443, timeoutMs)) return true;
@@ -857,52 +932,75 @@ namespace InternetChecker
                 pt = sb.ToString();
             }
 
-            // 3) Internet via VPN. Two kinds of "VPN":
-            //    (a) proxy-based (SOCKS/HTTP proxy, e.g. Xray/V2Ray) - test through the proxy;
-            //    (b) real tunnel adapter (WireGuard/OpenVPN with a routable IP) - test bound to it.
-            string vhost = c.VpnTarget.Trim();
+            // 3) Internet via VPN — checks SEVERAL popular resources (youtube/instagram/tiktok).
+            // The real question is "does the site actually open?", regardless of what IP it
+            // resolves to. So non-proxy checks use a genuine HTTPS request: it works whether
+            // the site resolves to a real IP OR to 127.0.0.1 with a local redirector tunneling
+            // it (a common TM setup), and fails when a blocked name has nothing answering.
+            // Proxy modes (SOCKS/HTTP) are tested through the proxy itself.
+            string[] vtargets = c.VpnTargets.Split(',');
+            string first = FirstNonEmpty(vtargets);
             ProxyInfo px = Proxy.Read();
-            if (px != null && px.Enabled && px.Host != null && px.Port > 0)
+            ProxyInfo active = null;      // proxy used for testing
+            bool proxyMode = false;
+            if (px != null && px.Enabled && px.Host != null && px.Port > 0) { active = px; proxyMode = true; }
+            else if (vpn == null)
             {
-                bool ok = Proxy.TestConnect(px, vhost, 443, c.TimeoutMs);
-                v = ok ? Res.Ok : Res.Fail;
-                vt = vhost + ": " + (ok ? "OK" : "нет") +
-                     "  [прокси " + px.Type + " " + px.Host + ":" + px.Port + "]";
+                active = Proxy.DetectLocal(c.ProxyProbePorts, first, c.TimeoutMs);
+                proxyMode = active != null;
             }
-            else if (vpn != null)
+
+            int vOk = 0, vTotal = 0; bool vResolvedAny = false;
+            StringBuilder vb = new StringBuilder();
+            foreach (string rawh in vtargets)
             {
-                IPAddress ip = Nets.ResolveVia(vpn, false, vhost, c.TimeoutMs);
-                if (ip == null) { v = Res.Fail; vt = vhost + ": нет DNS  [" + vpn.Name + "]"; }
+                string host = rawh.Trim();
+                if (host.Length == 0) continue;
+                vTotal++;
+                string mark;
+                if (proxyMode)
+                {
+                    bool ok = Proxy.TestConnect(active, host, 443, c.TimeoutMs);
+                    mark = ok ? "OK" : "нет"; if (ok) vOk++; vResolvedAny = true;
+                }
                 else
                 {
-                    bool ok = Nets.Reachable(vpn, ip, c.TimeoutMs);
-                    v = ok ? Res.Ok : Res.Fail;
-                    vt = vhost + ": " + (ok ? "OK" : "нет") + "  [" + vpn.Name + "]";
+                    // adapter or upstream/router VPN: a real HTTPS request over the default route
+                    bool ok = Probe.HttpsWorks(host, c.TimeoutMs);
+                    if (ok) { mark = "OK"; vOk++; vResolvedAny = true; }
+                    else
+                    {
+                        bool resolved = Nets.ResolveSystem(host) != null || Nets.IsPoisoned(host);
+                        if (resolved) vResolvedAny = true;
+                        mark = resolved ? "нет" : "нет DNS";
+                    }
                 }
+                if (vb.Length > 0) vb.Append(",  ");
+                vb.Append(host).Append(": ").Append(mark);
             }
-            else
+
+            string tag;
+            if (proxyMode)
+                tag = (active == px ? "прокси " : "локальный прокси ") + active.Type + " " + active.Host + ":" + active.Port;
+            else if (vpn != null) tag = vpn.Name;
+            else tag = "прямой доступ";
+
+            if (vOk > 0) v = Res.Ok;
+            else if (!proxyMode && vpn == null && !vResolvedAny)
             {
-                // No system proxy and no tunnel adapter: probe for a local proxy-VPN
-                // (v2ray/xray/clash running without setting the system proxy).
-                ProxyInfo local = Proxy.DetectLocal(c.ProxyProbePorts, vhost, c.TimeoutMs);
-                if (local != null)
-                {
-                    v = Res.Ok;
-                    vt = vhost + ": OK  [локальный прокси " + local.Type + " " + local.Host + ":" + local.Port + "]";
-                }
-                else if (Probe.ReachableDirect(vhost, c.TimeoutMs))
-                {
-                    // No local adapter/proxy, yet the target is reachable directly -> the
-                    // internet already arrives through an upstream/router VPN.
-                    v = Res.Ok;
-                    vt = vhost + ": OK  [прямой доступ — интернет уже идёт через VPN]";
-                }
-                else if (px != null && px.Pac != null && px.Pac.Length > 0)
-                {
-                    v = Res.Unknown; vt = "PAC-прокси (авто-конфиг) не поддерживается: " + px.Pac;
-                }
-                else { v = Res.Off; vt = "VPN выключен (ни адаптера, ни прокси)"; }
+                if (px != null && px.Pac != null && px.Pac.Length > 0)
+                { v = Res.Unknown; tag = "PAC-прокси не поддерживается"; }
+                else { v = Res.Off; tag = "нет VPN"; }
             }
+            else v = Res.Fail;
+
+            vt = vOk + "/" + vTotal + "  " + vb.ToString() + "  [" + tag + "]";
+        }
+
+        static string FirstNonEmpty(string[] arr)
+        {
+            foreach (string s in arr) { string t = s.Trim(); if (t.Length > 0) return t; }
+            return "youtube.com";
         }
 
         void ApplyUi()
@@ -1064,17 +1162,17 @@ namespace InternetChecker
             StartPosition = FormStartPosition.Manual;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(430, 175);
+            ClientSize = new Size(560, 190);
             BackColor = Color.White;
             Font = new Font("Segoe UI", 9f);
 
             gwDot = MakeDot(14); gwLbl = MakeLbl(36, 14); gwBtn = MakeBtn(14);
-            provDot = MakeDot(58); provLbl = MakeLbl(36, 58); provBtn = MakeBtn(58);
-            vpnDot = MakeDot(102); vpnLbl = MakeLbl(36, 102); vpnBtn = MakeBtn(102);
+            provDot = MakeDot(60); provLbl = MakeLbl(36, 60); provBtn = MakeBtn(60);
+            vpnDot = MakeDot(106); vpnLbl = MakeLbl(36, 106); vpnBtn = MakeBtn(106);
 
             updLbl = new Label();
             updLbl.AutoSize = false;
-            updLbl.SetBounds(14, 146, 410, 20);
+            updLbl.SetBounds(14, 162, 540, 20);
             updLbl.ForeColor = Color.Gray;
             updLbl.Text = "Проверка...";
 
@@ -1097,7 +1195,7 @@ namespace InternetChecker
         {
             Label l = new Label();
             l.AutoSize = false;
-            l.SetBounds(x, y, 290, 40);
+            l.SetBounds(x, y, 420, 42);
             l.Text = "...";
             return l;
         }
@@ -1106,7 +1204,7 @@ namespace InternetChecker
         {
             Button b = new Button();
             b.Text = "Проверить";
-            b.SetBounds(336, y, 84, 28);
+            b.SetBounds(466, y, 84, 28);
             return b;
         }
     }
